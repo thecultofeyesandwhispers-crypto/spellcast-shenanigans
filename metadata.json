@@ -1,0 +1,7 @@
+{
+  "name": "Spellcast Shenanigans ",
+  "description": "A decentralized spellcasting recognition and effect delivery system interface. Simulates a Player_Node with voice recognition, UWB ranging, and mesh networking.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
