@@ -1,6 +1,17 @@
-import { NetworkEventType, NetworkMessage, HeartbeatPayload, SpellCastPayload } from '../types';
 
-const CHANNEL_NAME = 'spellcast-mesh-v1';
+import { 
+  MessageType, 
+  NetworkMessage, 
+  HeartbeatMessage, 
+  SpellCastMessage, 
+  SpellAckMessage,
+  DeviceID,
+  PlayerName,
+  Position,
+  SpellID
+} from '../types';
+
+const CHANNEL_NAME = 'spellcast-mesh-v2';
 
 class LinkService {
   private channel: BroadcastChannel;
@@ -13,26 +24,65 @@ class LinkService {
     };
   }
 
-  public broadcastHeartbeat(senderId: string, payload: HeartbeatPayload) {
-    const msg: NetworkMessage = {
-      type: NetworkEventType.HEARTBEAT,
-      senderId,
-      payload,
+  public broadcastHeartbeat(deviceId: DeviceID, playerName: PlayerName, position: Position) {
+    const msg: HeartbeatMessage = {
+      type: MessageType.HEARTBEAT,
+      deviceId,
+      playerName,
       timestamp: Date.now(),
+      payload: {
+        position
+      },
     };
     this.channel.postMessage(msg);
   }
 
-  public broadcastSpell(senderId: string, payload: SpellCastPayload) {
-    const msg: NetworkMessage = {
-      type: NetworkEventType.SPELL_CAST,
-      senderId,
-      payload,
+  public broadcastSpell(
+    deviceId: DeviceID, 
+    playerName: PlayerName, 
+    targetDeviceId: DeviceID, 
+    spellId: SpellID, 
+    incantationText: string,
+    range: number
+  ) {
+    const msg: SpellCastMessage = {
+      type: MessageType.SPELL_CAST,
+      deviceId,
+      playerName,
       timestamp: Date.now(),
+      payload: {
+        castId: crypto.randomUUID(),
+        spellId,
+        targetDeviceId,
+        incantationText,
+        sourceRangeMeters: range
+      },
     };
     this.channel.postMessage(msg);
-    // Also notify local listeners so we see our own casts
-    this.notifyListeners(msg);
+    this.notifyListeners(msg); // Local echo
+  }
+
+  public broadcastAck(
+    deviceId: DeviceID,
+    playerName: PlayerName,
+    castId: string,
+    success: boolean,
+    resultMessage: string
+  ) {
+    const msg: SpellAckMessage = {
+      type: MessageType.SPELL_ACK,
+      deviceId,
+      playerName,
+      timestamp: Date.now(),
+      payload: {
+        castId,
+        success,
+        resultMessage
+      }
+    };
+    this.channel.postMessage(msg);
+    // No local echo needed usually, but good for logs
+    this.notifyListeners(msg); 
   }
 
   public subscribe(callback: (msg: NetworkMessage) => void) {

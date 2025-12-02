@@ -1,13 +1,15 @@
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
-  HeartbeatPayload, 
   LogEntry, 
-  NetworkEventType, 
+  MessageType, 
   PlayerNode, 
   Position, 
   SPELL_RANGE_METERS, 
   REQUIRED_REPETITIONS,
-  INCANTATION_WINDOW_MS
+  INCANTATION_WINDOW_MS,
+  DeviceID,
+  SpellID
 } from './types';
 import { linkService } from './services/LinkService';
 import { Radar } from './components/Radar';
@@ -48,7 +50,16 @@ interface SpeechRecognitionAlternative {
 }
 
 // --- Utilities ---
-const generateId = () => Math.random().toString(36).substring(2, 9);
+const getDeviceId = (): DeviceID => {
+  const key = 'spellcast_device_id';
+  let id = localStorage.getItem(key);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(key, id);
+  }
+  return id;
+};
+
 const getRandomName = () => {
   const names = ['Riven', 'Hero', 'Zed', 'Lux', 'Jinx', 'Vi', 'Ekko'];
   return names[Math.floor(Math.random() * names.length)] + '-' + Math.floor(Math.random() * 100);
@@ -57,7 +68,7 @@ const getRandomName = () => {
 // --- Main Component ---
 export default function App() {
   // State: Identity
-  const [selfId] = useState(generateId());
+  const [deviceId] = useState(getDeviceId());
   const [name, setName] = useState(getRandomName());
   
   // State: Physics
@@ -77,7 +88,7 @@ export default function App() {
   const peersRef = useRef<Record<string, PlayerNode>>({});
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const positionRef = useRef(position);
-  const isListeningRef = useRef(isListening); // Ref to track state inside callbacks
+  const isListeningRef = useRef(isListening); 
   const restartTimeoutRef = useRef<number | null>(null);
 
   // Sync ref
@@ -90,45 +101,53 @@ export default function App() {
   }, [isListening]);
 
   const addLog = useCallback((message: string, type: LogEntry['type'] = 'info') => {
-    setLogs(prev => [...prev.slice(-50), { id: generateId(), timestamp: Date.now(), message, type }]);
+    setLogs(prev => [...prev.slice(-50), { id: crypto.randomUUID(), timestamp: Date.now(), message, type }]);
   }, []);
 
   // --- Network Setup ---
   useEffect(() => {
-    addLog(`System initialized. Node ID: ${selfId}`, 'system');
+    addLog(`System initialized. Device ID: ${deviceId.substring(0,8)}...`, 'system');
 
     // Subscribe to mesh events
     const unsubscribe = linkService.subscribe((msg) => {
-      if (msg.senderId === selfId) return; // Ignore echoes if any (LinkService handles local echo for spells differently)
+      // HANDLE HEARTBEAT
+      if (msg.type === MessageType.HEARTBEAT) {
+        if (msg.deviceId === deviceId) return;
 
-      if (msg.type === NetworkEventType.HEARTBEAT) {
-        const payload = msg.payload as HeartbeatPayload;
         const peer: PlayerNode = {
-          id: msg.senderId,
-          name: payload.name,
-          position: payload.position,
+          deviceId: msg.deviceId,
+          name: msg.playerName,
+          position: msg.payload.position,
           lastSeen: Date.now(),
         };
-        peersRef.current = { ...peersRef.current, [msg.senderId]: peer };
+        peersRef.current = { ...peersRef.current, [msg.deviceId]: peer };
         setPeers({ ...peersRef.current });
-      } else if (msg.type === NetworkEventType.SPELL_CAST) {
-        // Someone cast a spell
-        const { casterName, targetName, spell } = msg.payload;
-        addLog(`${casterName} cast [${spell}] on ${targetName}`, 'combat');
+      } 
+      
+      // HANDLE SPELL CAST
+      else if (msg.type === MessageType.SPELL_CAST) {
+        if (msg.deviceId === deviceId) return; // Ignore own casts via network (echo handled locally if needed)
+
+        const { spellId, targetDeviceId } = msg.payload;
+        addLog(`${msg.playerName} cast [${spellId}]`, 'combat');
 
         // AM I THE TARGET?
-        if (targetName.toLowerCase() === name.toLowerCase()) {
-           handleEffectReceived(spell, casterName);
+        if (targetDeviceId === deviceId) {
+           handleEffectReceived(msg.payload.castId, spellId, msg.playerName);
+        }
+      }
+
+      // HANDLE ACK
+      else if (msg.type === MessageType.SPELL_ACK) {
+        if (msg.payload.success) {
+          addLog(`ACK from ${msg.playerName}: ${msg.payload.resultMessage}`, 'system');
         }
       }
     });
 
     // Start Heartbeat Loop
     const heartbeatInterval = setInterval(() => {
-      linkService.broadcastHeartbeat(selfId, {
-        name,
-        position: positionRef.current
-      });
+      linkService.broadcastHeartbeat(deviceId, name, positionRef.current);
       
       // Prune old peers (> 5s offline)
       const now = Date.now();
@@ -141,34 +160,44 @@ export default function App() {
       });
       if (changed) setPeers({ ...peersRef.current });
 
-    }, 500); // 2Hz heartbeat
+    }, 500); 
 
     return () => {
       unsubscribe();
       clearInterval(heartbeatInterval);
       if (restartTimeoutRef.current) clearTimeout(restartTimeoutRef.current);
     };
-  }, [selfId, name, addLog]); // Dependencies should be stable
+  }, [deviceId, name, addLog]); 
 
   // --- Spell Logic ---
 
-  const handleEffectReceived = (spell: string, caster: string) => {
+  const handleEffectReceived = (castId: string, spell: string, casterName: string) => {
     // Visual Shake
     document.body.classList.add('animate-pulse', 'bg-red-900/20');
     setTimeout(() => document.body.classList.remove('animate-pulse', 'bg-red-900/20'), 500);
 
     // TTS
-    const utterance = new SpeechSynthesisUtterance(`You are shoved by ${caster}`);
+    const utterance = new SpeechSynthesisUtterance(`You are shoved by ${casterName}`);
     utterance.rate = 1.2;
     window.speechSynthesis.speak(utterance);
 
     addLog(`*** HIT BY ${spell.toUpperCase()} ***`, 'error');
     if (navigator.vibrate) navigator.vibrate([200, 50, 200]);
+
+    // Send ACK
+    linkService.broadcastAck(
+      deviceId,
+      name,
+      castId,
+      true,
+      "Target impacted successfully."
+    );
   };
 
-  const attemptSpellCast = (targetName: string, spell: string) => {
-    // 1. Identify Target ID from peers
+  const attemptSpellCast = (targetName: string, spell: SpellID) => {
+    // 1. Resolve Target Name -> Device ID
     const players = Object.values(peersRef.current) as PlayerNode[];
+    // Find closest match by name
     const targetEntry = players.find((p) => p.name.toLowerCase() === targetName.toLowerCase());
     
     if (!targetEntry) {
@@ -186,32 +215,29 @@ export default function App() {
         return;
     }
 
-    // 3. Success
-    linkService.broadcastSpell(selfId, {
-      casterName: name,
-      targetName: targetEntry.name,
-      spell
-    });
+    // 3. Success Broadcast
+    linkService.broadcastSpell(
+      deviceId,
+      name,
+      targetEntry.deviceId,
+      spell,
+      `${targetName}, my power shoves thee`,
+      distance
+    );
     
-    // Clear phrases to prevent double cast
+    addLog(`Casting [${spell}] on ${targetEntry.name}...`, 'combat');
     setRecognizedPhrases([]); 
   };
 
   const processPhraseBuffer = useCallback(() => {
-    // Regex matches "<Target> my power shoves thee"
-    // \b ensures we don't match middle of words
-    // We scan globally (/g) to find multiple spells in one string
     const regex = /\b(?<target>[\w-]+)[,.]?\s+my power shoves thee/gi;
     
     const now = Date.now();
-    // Filter relevant window
     const activePhrases = recognizedPhrases.filter(p => now - p.time < INCANTATION_WINDOW_MS);
     
-    // Group by target
     const counts: Record<string, number> = {};
     
     activePhrases.forEach(phrase => {
-      // matchAll is safer for multiple repetitions in one string
       const matches = phrase.text.matchAll(regex);
       for (const match of matches) {
           if (match.groups?.target) {
@@ -223,14 +249,13 @@ export default function App() {
     
     setActiveCharges(counts);
 
-    // Check threshold
     Object.entries(counts).forEach(([target, count]) => {
       if (count >= REQUIRED_REPETITIONS) {
         attemptSpellCast(target, 'shove');
       }
     });
     
-  }, [recognizedPhrases, name]);
+  }, [recognizedPhrases, name, deviceId]); // added deps
 
   useEffect(() => {
     processPhraseBuffer();
@@ -247,7 +272,7 @@ export default function App() {
 
     try {
         if (recognitionRef.current) {
-            recognitionRef.current.abort(); // Kill old instance
+            recognitionRef.current.abort(); 
         }
         
         const recognition = new SpeechRecognition();
@@ -282,9 +307,7 @@ export default function App() {
         };
 
         recognition.onend = () => {
-            // If the user expects us to be listening, try to restart
             if (isListeningRef.current) {
-                // Add a small delay to prevent rapid looping if there's a hard error
                 restartTimeoutRef.current = window.setTimeout(() => {
                     if (isListeningRef.current) {
                         addLog("Restarting Voice Service...", 'system');
@@ -322,18 +345,16 @@ export default function App() {
       }
   };
   
-  // --- Manual Override (for testing) ---
+  // --- Manual Override ---
   const [manualInput, setManualInput] = useState("");
   const handleManualSubmit = (e: React.FormEvent) => {
       e.preventDefault();
       if (!manualInput) return;
-      // Add as final recognized phrase
       setRecognizedPhrases(prev => [...prev, { text: manualInput, time: Date.now() }]);
       addLog(`Manual Input: "${manualInput}"`);
       setManualInput("");
   };
 
-  // --- Render ---
   return (
     <div className="flex flex-col h-screen max-w-md mx-auto bg-zinc-950 border-x border-zinc-800 shadow-2xl relative overflow-hidden">
       
@@ -343,7 +364,7 @@ export default function App() {
           <h1 className="text-cyan-400 font-bold tracking-tighter text-lg flex items-center gap-2">
             <Wifi className="w-4 h-4 animate-pulse" /> UPLINK_NODE
           </h1>
-          <div className="text-[10px] text-zinc-500 font-mono">{selfId}</div>
+          <div className="text-[10px] text-zinc-500 font-mono" title={deviceId}>{deviceId.substring(0,12)}...</div>
         </div>
         <div className="text-right">
           <div className="text-zinc-200 font-bold">{name}</div>
@@ -360,7 +381,7 @@ export default function App() {
         {/* Radar */}
         <div className="z-0">
           <Radar 
-            self={{ id: selfId, name, position, lastSeen: Date.now(), isSelf: true }}
+            self={{ deviceId, name, position, lastSeen: Date.now(), isSelf: true }}
             peers={Object.values(peers)}
             onPositionChange={setPosition}
           />

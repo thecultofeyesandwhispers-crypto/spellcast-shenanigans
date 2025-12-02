@@ -1,38 +1,67 @@
+
+export type DeviceID = string; // UUID
+export type PlayerName = string;
+export type SpellID = 'shove' | 'pull' | 'ignite';
+
 export interface Position {
   x: number;
   y: number;
 }
 
+// Local representation of a peer
 export interface PlayerNode {
-  id: string;
-  name: string;
+  deviceId: DeviceID;
+  name: PlayerName;
   position: Position;
   lastSeen: number;
   isSelf?: boolean;
 }
 
-export enum NetworkEventType {
+export enum MessageType {
   HEARTBEAT = 'HEARTBEAT',
   SPELL_CAST = 'SPELL_CAST',
+  SPELL_ACK = 'SPELL_ACK',
 }
 
-export interface NetworkMessage {
-  type: NetworkEventType;
-  senderId: string;
-  payload: any;
+// --- Protocol Messages ---
+
+export interface BaseMessage {
+  deviceId: DeviceID;
+  playerName: PlayerName;
   timestamp: number;
 }
 
-export interface HeartbeatPayload {
-  name: string;
-  position: Position;
+export interface HeartbeatMessage extends BaseMessage {
+  type: MessageType.HEARTBEAT;
+  payload: {
+    position: Position;
+    // Future: batteryLevel, status, etc.
+  };
 }
 
-export interface SpellCastPayload {
-  casterName: string;
-  targetName: string;
-  spell: string;
+export interface SpellCastMessage extends BaseMessage {
+  type: MessageType.SPELL_CAST;
+  payload: {
+    castId: string; // UUID for specific event
+    spellId: SpellID;
+    targetDeviceId: DeviceID;
+    incantationText: string;
+    sourceRangeMeters: number;
+  };
 }
+
+export interface SpellAckMessage extends BaseMessage {
+  type: MessageType.SPELL_ACK;
+  payload: {
+    castId: string; // Reference to the cast
+    success: boolean;
+    resultMessage: string;
+  };
+}
+
+export type NetworkMessage = HeartbeatMessage | SpellCastMessage | SpellAckMessage;
+
+// --- Application Constants ---
 
 export interface LogEntry {
   id: string;

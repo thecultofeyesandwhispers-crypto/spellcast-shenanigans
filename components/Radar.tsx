@@ -1,4 +1,5 @@
-import React, { useRef, useEffect, useState } from 'react';
+
+import React, { useRef, useState } from 'react';
 import { PlayerNode, SPELL_RANGE_METERS } from '../types';
 
 interface RadarProps {
@@ -32,15 +33,7 @@ export const Radar: React.FC<RadarProps> = ({ self, peers, onPositionChange }) =
     const clickX = e.clientX - rect.left;
     const clickY = e.clientY - rect.top;
 
-    // Convert screen coordinates to world coordinates (meters)
-    // Center of screen is (0,0) relative to self?
-    // No, let's make the center of the screen (0,0) in world space for simplicity in this demo,
-    // so players move around a fixed origin.
-    
-    // Actually, usually in a game, Self is center. But for this simulation, 
-    // to allow testing distance, let's say the Radar represents a 15x15m room.
-    // (0,0) is the center of the room.
-    
+    // (0,0) is center of screen
     const worldX = (clickX - CENTER) / SCALE;
     const worldY = (clickY - CENTER) / SCALE;
 
@@ -87,7 +80,7 @@ export const Radar: React.FC<RadarProps> = ({ self, peers, onPositionChange }) =
 
             return (
                 <div 
-                    key={peer.id}
+                    key={peer.deviceId}
                     className={`absolute w-3 h-3 rounded-full -translate-x-1/2 -translate-y-1/2 transition-all duration-300 pointer-events-none ${isTargetable ? 'bg-red-500 shadow-[0_0_8px_#ef4444]' : 'bg-zinc-500'}`}
                     style={{
                         left: CENTER + peer.position.x * SCALE,
